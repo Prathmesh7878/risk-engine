@@ -2,32 +2,30 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
-import numpy as np
 import joblib
 from xgboost import XGBClassifier
 
 app = FastAPI()
 
-# Allow Vercel frontend
+# Allow frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Later restrict to your domain
+    allow_origins=["*"],  # for debugging, restrict later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Load model
+# Load model and features
 model = XGBClassifier()
 model.load_model("credit_model.json")
-
 features = joblib.load("feature_columns.pkl")
 
 profit_per_good = 15000
 loss_per_default = 60000
 
 
-# ===== INPUT STRUCTURE (MATCH UI FORM) =====
+# ===== INPUT STRUCTURE =====
 
 class Applicant(BaseModel):
     age: float
@@ -49,22 +47,17 @@ def root():
 def predict(data: Applicant):
 
     # Feature Engineering
-    credit_income_ratio = data.loan_amount / data.monthly_income
-    emi_income_ratio = data.monthly_emi / data.monthly_income
-
-    # Placeholder EXT_SOURCE (since UI doesn't have it)
-    ext1 = 0.5
-    ext2 = 0.5
-    ext3 = 0.5
+    credit_income_ratio = data.loan_amount / max(data.monthly_income, 1)
+    emi_income_ratio = data.monthly_emi / max(data.monthly_income, 1)
 
     input_dict = {
         "age": data.age,
         "employment_years": data.employment_years,
         "credit_income_ratio": credit_income_ratio,
         "emi_income_ratio": emi_income_ratio,
-        "EXT_SOURCE_1": ext1,
-        "EXT_SOURCE_2": ext2,
-        "EXT_SOURCE_3": ext3,
+        "EXT_SOURCE_1": 0.5,
+        "EXT_SOURCE_2": 0.5,
+        "EXT_SOURCE_3": 0.5,
         "income_type_encoded": 1,
         "loan_count": data.previous_loans,
         "total_overdue": data.overdue_amount,
@@ -77,10 +70,9 @@ def predict(data: Applicant):
 
     pd_prob = model.predict_proba(input_df)[0][1]
 
-    # Expected Value Decision
+    # Business Logic
     ev = (1 - pd_prob) * profit_per_good - pd_prob * loss_per_default
     approve = ev > 0
-
     credit_score = 300 + (1 - pd_prob) * 600
 
     if credit_score >= 750:
@@ -92,10 +84,14 @@ def predict(data: Applicant):
     else:
         risk_band = "High Risk"
 
+    # RESPONSE STRUCTURE MATCHING UI
     return {
-        "probability_of_default": round(float(pd_prob), 4),
-        "credit_score": round(float(credit_score)),
-        "risk_band": risk_band,
-        "expected_value": round(float(ev), 2),
-        "approve": bool(approve)
+        "creditScore": round(float(credit_score)),
+        "riskBand": risk_band,
+        "recommendation": "Approve" if approve else "Reject",
+        "confidence": round(float(1 - pd_prob), 3),
+        "predictionProbability": round(float(pd_prob), 4),
+        "debtToIncomeRatio": round(float(emi_income_ratio), 3),
+        "expectedValue": round(float(ev), 2),
+        "approve": bool(approve),
     }
